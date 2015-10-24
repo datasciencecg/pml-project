@@ -1,0 +1,152 @@
+---
+title: "PML-ProjectReport"
+output: html_document
+---
+
+<h3>**Introduction**</h3>
+In this project we will train a model to predict the quality of a barbell lifting exercise based on data from sensors attached on the belt, forearm, arm, and dumbell recorded of 6 participants.
+
+More information can be found here: http://groupware.les.inf.puc-rio.br/har 
+
+<h3>**Reproducability**</h3>
+Load the required libraries:
+```{r}
+library(caret)
+library(rpart)
+library(MASS)
+library(randomForest)
+```
+And set the seed:
+```{r}
+set.seed(12345)
+```
+
+<h3>**Getting the data**</h3>
+The training data set can be loaded on the following url:
+```{r}
+if (!file.exists("pml-training.csv")){
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+                "pml-training.csv")
+}
+train <- read.csv("pml-training.csv", na.strings = c("NA" ,"#DIV/0!", ""))
+```
+And the test data set: 
+```{r}
+if (!file.exists("pml-testing.csv")){
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+                "pml-testing.csv")
+test <- read.csv("pml-testing.csv", na.strings = c("NA" ,"#DIV/0!", ""))
+}
+```
+
+<h3>**Data exploring**</h3>
+The data contains 19622 rows and 160 variables:
+```{r}
+dim(train)
+```
+From the summary we notice that different variables contains NAs.
+```{r, echo=TRUE, eval=FALSE}
+summary(train)
+```
+
+<h3>**Splitting the data**</h3>
+We split the data into a training set (70%) and an test set part (30%):
+```{r}
+inTrain <- createDataPartition(y=train$classe, p=0.7, list=FALSE)
+myTraining <- train[inTrain, ] 
+myTesting <- train[-inTrain, ]
+dim(myTraining);dim(myTesting)
+```
+
+<h3>**Cleaning the data**</h3>
+To clean the data we first remove all columns containing NAs. 60 variables contain no NAs: 
+```{r}
+naTrain <- sapply(myTraining, function(x) {sum(is.na(x))})
+table(naTrain)
+
+naCol <- names(naTrain[naTrain > 13000])
+trainCleaned <- myTraining[!names(train) %in% naCol]
+```
+
+Second we eliminate meta data like row index, timestamp and window number. Besides that the username is also removed because we want to make out model independant of the user:
+```{r}
+trainCleaned <- trainCleaned[,-c(1:7)]
+```
+
+We now have a reduced training data set with 52 predictive variables and the dependant 'classe' variable: 
+```{r}
+length(names(trainCleaned))
+```
+This selection is reasonnable: it contains the raw data from the three sensors (accelerometer, gyroscope and magnetometer) at the belt, glove, armband and dumbbel in three dimension. Additionally the calculated Euler angles (roll, pitch and yaw) as well as the total accelerations are included (3 * 3 * 4 + 3 * 4 + 4 = 52).
+Not included are the created features variable from the sliding window approach mentioned in the referenced paper https://www.r-project.org/nosvn/conferences/useR-2013/Tutorials/kuhn/user_caret_2up.pdf.
+
+The same cleaning transformations must also be done in the test data set:
+```{r}
+testCleaned <- myTesting[!names(train) %in% naCol]
+testCleaned <- testCleaned[,-c(1:7)]
+```
+
+<h3>**Model building**</h3>
+We now examine different prediction methods provided by the caret package using the data set containing only 52 predictors.
+In order to use cross validation we prepare three data folds: 
+```{r}
+folds <- createFolds(y = trainCleaned$classe, k=3, list=TRUE, returnTrain=TRUE)
+sapply(folds, length)
+```
+
+Since we are faced with a non-linear prediction problem with dependant predictors we expect random forest to be the most accurate model.
+Nevertheless let's start with the simple tree classification method CART, then try a model based approach (lda) and end up with rf.
+
+Train the different models, predict with cv test data and build the confusion matrix:
+```{r}
+modFitRPart <- train(classe ~ .,data=trainCleaned[folds[[1]],], method="rpart")
+predictRPart <- predict(modFitRPart, trainCleaned[-folds[[1]],])
+cfRpart <- confusionMatrix(predictRPart, trainCleaned[-folds[[1]],]$classe)
+
+modFitLda <- train(classe ~ .,data=trainCleaned[folds[[2]],], method="lda")
+predictLda <- predict(modFitLda, trainCleaned[-folds[[2]],])
+cfLda <- confusionMatrix(predictLda, trainCleaned[-folds[[2]],]$classe)
+```
+```{r, echo=TRUE, eval=FALSE}
+modFitRf <- train(classe ~ .,data=trainCleaned[folds[[3]],], method="rf")
+```
+```{r, echo=FALSE, eval=TRUE}
+modFitRf <- readRDS("rfmodel11.RDS")
+```
+```{r}
+predictRf <- predict(modFitRf, trainCleaned[-folds[[3]],])
+cfRf <- confusionMatrix(predictRf, trainCleaned[-folds[[3]],]$classe)
+```
+
+Compare the different models in terms of accuracy:
+```{r}
+modelComparison <- rbind(cfRpart$overall,cfLda$overall,cfRf$overall)
+row.names(modelComparison) <- c("rpart", "lda", "rf")
+modelComparison[,c(1:4)]
+```
+
+As expected random forest has the best accuracy. We therefore fit a final rf model including the whole cleand train data set:
+```{r, echo=TRUE, eval=FALSE}
+modFitRfFinal <- train(classe ~ .,data=trainCleaned, method="rf", 
+                        trControl=trainControl(method="cv",number=5),
+                        prox=TRUE,allowParallel=TRUE)
+```
+
+```{r, echo=FALSE, eval=TRUE}
+modFitRfFinal <- readRDS("rfmodelRFFinal13.RDS")
+```
+```{r}
+print(modFitRfFinal)
+```
+This model gives a pretty good accuracy.
+
+<h3>**Validating the model**</h3>
+In order to validate the model we can now test the accuracy using the testing data set:
+```{r}
+predictRfFinal <- predict(modFitRfFinal, testCleaned)
+confusionMatrix(predictRfFinal, testCleaned$classe)
+```
+We estimate the out of sample error to be 0.3% (1-accuracy).
+
+<h3>**Conclusion**</h3>
+We have built a machine learning model to predict barbell lifting exercise quality based on different movement data. The estimated out of sample error is very slow, but it must be mentioned that we are predicting the exercise quality of 6 known probands. We expect a higher error in real life situations with new unknown subjects.  
